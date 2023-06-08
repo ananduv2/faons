@@ -35,3 +35,7 @@ The `main.py` file will be responsible for running your application. The `settin
 ## Creating you first app for your project
 
 FAONS inherit the idea of creating apps from Django. We will be creating different apps to separate different modules in our application. We can create apps by using the command `faons startapp <app_name>` . Once done the app folder will be created inside the `src/core` folder.
+
+## Updating your schema to the DB
+
+One useful feature that we missed while coming from django to fastapi was that it lacked the feature to migrate the schema to its db easily. With faons v 0.0.4 we included a function do exactly the same thing. You can use the command `faons updateschema` which will create, alter or drop tables based on the changes that you make to the `schema.py` in the apps.

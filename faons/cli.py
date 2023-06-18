@@ -43,7 +43,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 
 
-app = FastAPI(title="FAONS - Made on Fast API", version="0.0.4")
+app = FastAPI(title="FAONS - Made on Fast API", version="0.0.5")
 include_routers(app)
 
 
@@ -60,23 +60,13 @@ if __name__ == '__main__':
 
 BASE_DIR = Path(__file__).resolve().parent
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'sqlite',
-        'NAME': str(BASE_DIR / 'db.sqlite3'),
-    }
-}
+# Change you database connection over here
+DATABASE_URL = f'sqlite:///{BASE_DIR}/db.sqlite3'
         ''',
-        'utils.py':'''import inspect
-from pathlib import Path
+        'utils.py':'''from pathlib import Path
 from fastapi import FastAPI, APIRouter
 from importlib import import_module
-from sqlalchemy import create_engine, MetaData, text
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy_utils import create_database, database_exists
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.exc import OperationalError
-from settings import DATABASES
+
 
 def include_routers(app: FastAPI):
     """
@@ -212,6 +202,9 @@ def updateschema(project_dir):
 
     # Get the db_url from the settings
     db_url = f"{settings['DATABASES']['default']['ENGINE']}:///{settings['DATABASES']['default']['NAME']}"
+    print(f"db_url-->{db_url}")
+    db_url = settings['DATABASE_URL']
+    print(f"db_url-->{db_url}")
     engine = create_engine(db_url)
 
     # Define the create_or_alter_tables function here

@@ -1,11 +1,8 @@
 import click
 import os
-import sys
-from sqlalchemy import create_engine, inspect, text
+import importlib
+from sqlalchemy import create_engine, inspect, text, MetaData, Table, Column, Integer, String
 from sqlalchemy.orm import sessionmaker
-from importlib import import_module
-from sqlalchemy.exc import OperationalError
-from inspect import isclass
 
 CONTEXT_SETTINGS = dict(help_option_names=['-h', '--help'])
 
@@ -166,14 +163,28 @@ def import_schemas(project_dir):
     for root, dirs, files in os.walk(src_path):
         for file in files:
             if file == 'schema.py':
-                path = os.path.join(root, file)
-                module_name = os.path.splitext(os.path.basename(path))[0]
-                sys.path.insert(0, root)
-                module = import_module(module_name)
-                schemas.append(module)
-                sys.path.pop(0)
-    
+                module_path = os.path.relpath(root, src_path).replace(os.sep, '.')
+                module_name = os.path.splitext(file)[0]
+                full_module_name = f'{module_path}.{module_name}'
+
+                try:
+                    spec = importlib.util.spec_from_file_location(full_module_name, os.path.join(root, file))
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
+                    schemas.append(module)
+                except Exception as e:
+                    print(f"Failed to import module: {full_module_name}")
+                    print(f"Error details: {str(e)}")
+
     return schemas
+
+def schemalist(schemas):
+    classes = []
+    for schema in schemas:
+        for name, obj in schema.__dict__.items():
+            if isinstance(obj, type) and issubclass(obj, schema.Base) and obj is not schema.Base:
+                classes.append(obj.__tablename__)
+    return classes
 
 @click.command('updateschema')
 @click.option('--project-dir', help='Path to the project directory', type=click.Path(exists=True, file_okay=False, dir_okay=True, resolve_path=True))
@@ -201,14 +212,18 @@ def updateschema(project_dir):
     exec(open(settings_path).read(), exec_globals, settings)
 
     # Get the db_url from the settings
-    db_url = f"{settings['DATABASES']['default']['ENGINE']}:///{settings['DATABASES']['default']['NAME']}"
-    print(f"db_url-->{db_url}")
     db_url = settings['DATABASE_URL']
-    print(f"db_url-->{db_url}")
     engine = create_engine(db_url)
 
     # Define the create_or_alter_tables function here
     def create_or_alter_tables(engine):
+        metadata = MetaData()
+        faons_schema_table = Table(
+            'faons_schema',
+            metadata,
+            Column('id', Integer, primary_key=True),
+            Column('table_name', String, unique=True)
+        )
         Session = sessionmaker(bind=engine)
         session = Session()
 
@@ -216,17 +231,15 @@ def updateschema(project_dir):
         inspector = inspect(engine)
         existing_tables = inspector.get_table_names()
 
-        # Remove tables that no longer exist in the schema
-        for table_name in existing_tables:
-            if not any(
-                issubclass(obj, schema.Base) and obj is not schema.Base and hasattr(obj, '__tablename__') and obj.__tablename__ == table_name
-                for schema in schemas
-                for name, obj in schema.__dict__.items()
-                if isclass(obj)
-            ):
-                with engine.connect() as connection:
-                    connection.execute(text(f'DROP TABLE "{table_name}"'))
-                print(f"Table '{table_name}' removed.")
+        # Create 'faons_schema' table if it doesn't exist
+        if "faons_schema" not in existing_tables:
+            metadata.create_all(engine)
+            print("Table 'faons_schema' created.")
+
+        # Get the table names from the 'faons_schema' table
+        with engine.connect() as connection:
+            result = connection.execute(text("SELECT table_name FROM faons_schema"))
+            faons_table_names = [row[0] for row in result]
 
         # Create or alter tables
         for schema in schemas:
@@ -234,33 +247,89 @@ def updateschema(project_dir):
                 if isinstance(obj, type) and issubclass(obj, schema.Base) and obj is not schema.Base:
                     if hasattr(obj, '__tablename__'):
                         table_name = obj.__tablename__
+                        # if table_name in existing_tables and table_name in faons_table_names:
+                        #     print(f"Table '{table_name}' already exists in 'faons_schema' table.")
+                        #     continue
+                        if table_name in existing_tables:
+                            try:
+                                # Table already exists, compare table structure
+                                with engine.connect() as connection:
+                                    metadata.reflect(bind=engine)
+                                    existing_table = metadata.tables[table_name]
+                                    schema_table = obj.__table__
+                                    # Check if table columns match
+                                    for column in schema_table.columns:
+                                        if column.name not in existing_table.columns:
+                                            # Add missing column
+                                            connection.execute(
+                                                text(f'ALTER TABLE "{table_name}" ADD COLUMN "{column.name}" {column.type}')
+                                            )
+                                            print(f"Table '{table_name}' altered. Column '{column.name}' added.")
 
-                        if inspector.has_table(table_name):
-                            # Table already exists, check for columns to add or modify
-                            existing_columns = inspector.get_columns(table_name)
-                            schema_columns = obj.__table__.columns
+                                for column in existing_table.columns:
+                                    if column.name not in schema_table.columns:
+                                        # Remove extra column
+                                        with engine.connect() as connection:
+                                            connection.execute(
+                                                text(f'ALTER TABLE "{table_name}" DROP COLUMN "{column.name}"')
+                                            )
+                                        print(f"Table '{table_name}' altered. Column '{column.name}' dropped.")
 
-                            # Check if any new columns need to be added
-                            for column in schema_columns:
-                                if column.name not in [c['name'] for c in existing_columns]:
-                                    column_name = column.name
-                                    column_type = column.type
-                                    with engine.connect() as connection:
-                                        connection.execute(text(f'ALTER TABLE "{table_name}" ADD COLUMN "{column_name}" {column_type}'))
-                                    print(f"Table '{table_name}' altered. Column '{column_name}' added.")
+                                # Reflect the changes to the metadata
+                                metadata.reflect(bind=engine)
 
-                            # Check if any columns need to be modified
-                            for column in existing_columns:
-                                if column['name'] not in [c.name for c in schema_columns]:
-                                    column_name = column['name']
-                                    with engine.connect() as connection:
-                                        connection.execute(text(f'ALTER TABLE "{table_name}" DROP COLUMN "{column_name}"'))
-                                    print(f"Table '{table_name}' altered. Column '{column_name}' dropped.")
-
+                            except Exception as e:
+                                print(f"An error occurred while altering table '{table_name}': {str(e)}")
                         else:
                             # Table does not exist, create it
                             obj.metadata.create_all(engine)
                             print(f"Table '{table_name}' created.")
+
+                        # Add the table name to 'faons_schema' table
+                        if table_name not in faons_table_names:
+                            try:
+                                with engine.begin() as connection:
+                                    connection.execute(faons_schema_table.insert().values(table_name=table_name))
+                                print(f"Table '{table_name}' added to 'faons_schema' table.")
+                                # Commit the changes to the database
+                                connection.commit()
+                            except Exception as e:
+                                print(f"An error occurred while adding table '{table_name}' to 'faons_schema' table: {str(e)}")
+
+        # Get the table names from the 'faons_schema' table again
+        with engine.connect() as connection:
+            result = connection.execute(text("SELECT table_name FROM faons_schema"))
+            faons_table_names = [row[0] for row in result]
+            classes = schemalist(schemas)
+
+        # Remove tables that no longer exist in the schema
+        for table_name in existing_tables:
+            if (
+                table_name not in ['faons_models', 'faons_schema']
+                and table_name not in classes
+                and table_name in existing_tables
+            ):
+                with engine.connect() as connection:
+                    # Check if the table name exists in faons_schema before dropping it
+                    result = connection.execute(
+                        text("SELECT 1 FROM faons_schema WHERE table_name = :table_name"),
+                        {"table_name": table_name},
+                    )
+                    if result.fetchone() is not None:
+                        connection.execute(text(f'DROP TABLE IF EXISTS "{table_name}"'))
+                        print(f"Table '{table_name}' removed.")
+                        # Delete the corresponding record from the 'faons_schema' table
+                        try:
+                            with engine.begin() as connection:
+                                connection.execute(
+                                    text(f"DELETE FROM faons_schema WHERE table_name = :table_name"),
+                                    {"table_name": table_name},
+                                )
+                            print(f"Record for table '{table_name}' deleted from 'faons_schema' table.")
+                        except Exception as e:
+                            print(
+                                f"An error occurred while deleting record for table '{table_name}' from 'faons_schema' table: {str(e)}"
+                            )
 
         session.close()
 

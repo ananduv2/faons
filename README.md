@@ -38,4 +38,4 @@ FAONS inherit the idea of creating apps from Django. We will be creating differe
 
 ## Updating your schema to the DB
 
-One useful feature that we missed while coming from django to fastapi was that it lacked the feature to migrate the schema to its db easily. With faons v 0.0.4 we included a function do exactly the same thing. You can use the command `faons updateschema` which will create, alter or drop tables based on the changes that you make to the `schema.py` in the apps.
+One useful feature that we missed while coming from django to fastapi was that it lacked the feature to migrate the schema to its db easily. With faons v 0.0.4 we included a function do exactly the same thing. You can use the command `faons updateschema` which will create, alter or drop tables based on the changes that you make to the `schema.py` in the apps. From faons v 0.0.5 we started to create an additional table faons_schema which will be used to track the table names. This table was included to avoid issues due to an upcoming feature to export models to db like exporting schema.
